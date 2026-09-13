@@ -203,12 +203,26 @@ def extract_text_from_image(file_bytes: bytes) -> str:
         # psm 6 = assume a single uniform block of text (good default for bills)
         # psm 4 = assume a single column of text of variable sizes (good for tables)
         # psm 3 = fully automatic page segmentation (fallback/general purpose)
+        # lang="eng+urd" — Pakistani bills mix English and Urdu labels/text,
+        # so we ask Tesseract to recognize both scripts together.
         for psm in (6, 4, 3):
             try:
-                candidate = pytesseract.image_to_string(processed, config=f"--psm {psm}")
+                candidate = pytesseract.image_to_string(
+                    processed, lang="eng+urd", config=f"--psm {psm}"
+                )
                 candidate = candidate.strip()
                 if len(candidate) > len(best_text):
                     best_text = candidate
+            except pytesseract.TesseractError:
+                # Urdu language data may not be installed on this server —
+                # fall back to English-only OCR rather than failing entirely.
+                try:
+                    candidate = pytesseract.image_to_string(processed, config=f"--psm {psm}")
+                    candidate = candidate.strip()
+                    if len(candidate) > len(best_text):
+                        best_text = candidate
+                except Exception:
+                    continue
             except Exception:
                 continue
 
