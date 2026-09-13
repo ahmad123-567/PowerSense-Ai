@@ -45,7 +45,18 @@ EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 # Folder that holds official reference PDFs (tariff schedules, NEPRA
 # notifications, FCA/QTA decisions, complaint procedures, etc.)
-KNOWLEDGE_DIR = "knowledge"
+
+# Base directory setup
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Check multiple potential knowledge paths
+KNOWLEDGE_DIR = os.path.join(BASE_DIR, "knowledge")
+
+# Fallback path if files are nested inside powersense-ai/powersense-ai/knowledge
+if not os.path.exists(KNOWLEDGE_DIR) or not os.listdir(KNOWLEDGE_DIR):
+    alt_path = os.path.join(BASE_DIR, "powersense-ai", "powersense-ai", "knowledge")
+    if os.path.exists(alt_path):
+        KNOWLEDGE_DIR = alt_path
 
 # Text splitting parameters
 CHUNK_SIZE = 1000
