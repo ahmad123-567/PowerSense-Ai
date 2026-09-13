@@ -132,15 +132,44 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
 # TEXT EXTRACTION: IMAGE (OCR)
 # ---------------------------------------------------------------------------
 
+def _auto_rotate_with_osd(image: Image.Image) -> Image.Image:
+    """Detect and fix sideways/upside-down scans.
+
+    Some scanner apps (e.g. CamScanner) rotate the actual pixels of the
+    image instead of setting an EXIF rotation tag, so `ImageOps.exif_transpose`
+    alone cannot fix them. This uses Tesseract's own orientation detection
+    (OSD) to figure out the rotation angle and correct it.
+
+    Silently returns the original image if detection isn't confident enough
+    (e.g. too little text on the page, or very poor image quality) — this
+    is a best-effort improvement, not a hard requirement.
+    """
+    try:
+        osd = pytesseract.image_to_osd(image)
+        match = re.search(r"Rotate:\s*(\d+)", osd)
+        if match:
+            angle = int(match.group(1))
+            if angle in (90, 180, 270):
+                # PIL rotates counter-clockwise; Tesseract reports the
+                # clockwise correction needed, so we negate it.
+                image = image.rotate(-angle, expand=True)
+    except Exception:
+        pass
+    return image
+
+
 def _preprocess_image_for_ocr(image: Image.Image) -> Image.Image:
     """Clean up a phone photo / scanner-app image so Tesseract reads it better.
 
     Handles the most common real-world issues with bill photos: sideways
-    orientation from phone cameras, low resolution, uneven lighting/shadows,
-    and slightly blurry text.
+    orientation from phone cameras or scanner apps, low resolution, uneven
+    lighting/shadows, and slightly blurry text.
     """
-    # Respect the camera's rotation metadata (very common with phone photos)
+    # Respect the camera's rotation metadata (common with phone photos)
     image = ImageOps.exif_transpose(image)
+    # Fix rotation for scans where the pixels themselves are sideways
+    # (common with CamScanner-style exports that don't set an EXIF tag)
+    image = _auto_rotate_with_osd(image)
     # Grayscale — color information doesn't help OCR and can hurt it
     image = image.convert("L")
     # Upscale small images; Tesseract does noticeably better above ~1500px wide
