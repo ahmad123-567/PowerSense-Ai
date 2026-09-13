@@ -43,7 +43,8 @@ from groq import Groq
 
 GROQ_MODEL = "openai/gpt-oss-120b"
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-KNOWLEDGE_DIR = "knowledge"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+KNOWLEDGE_DIR = os.path.join(BASE_DIR, "knowledge")
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
 TOP_K = 5
