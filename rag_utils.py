@@ -38,7 +38,7 @@ from groq import Groq
 
 # Put the Groq model name in a single configuration variable so it can be
 # swapped easily if Groq changes their available/free model line-up.
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 # Embedding model used for the RAG knowledge base (small, free, CPU-friendly)
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
