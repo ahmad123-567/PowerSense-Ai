@@ -21,8 +21,9 @@ from typing import List, Dict, Tuple, Optional
 
 import streamlit as st
 from pypdf import PdfReader
-from PIL import Image
+from PIL import Image, ImageOps, ImageFilter
 import pytesseract
+import fitz  # PyMuPDF — used to rasterize scanned/image-only PDFs for OCR
 
 # These imports are wrapped in try/except because different langchain
 # versions have moved these classes between packages (langchain vs
@@ -73,11 +74,21 @@ TOP_K = 5
 # ---------------------------------------------------------------------------
 
 def extract_text_from_pdf(file_bytes: bytes) -> str:
-    """Extract raw text from an uploaded PDF electricity bill using PyPDF.
+    """Extract raw text from an uploaded PDF electricity bill.
 
-    Returns an empty string (never raises) so the calling UI code can show
-    a friendly message instead of a stack trace.
+    Many "PDF" bills (e.g. exported from CamScanner or other scanner apps)
+    contain no real text layer at all — they are just a photo embedded in a
+    PDF wrapper. So this function:
+      1. First tries a normal PyPDF text extraction (fast, works for
+         genuine digital/text PDFs).
+      2. If that yields little/no usable text, it falls back to rendering
+         each PDF page as an image (via PyMuPDF) and running the same OCR
+         pipeline used for photos.
+
+    Never raises — returns whatever text it could get (possibly empty) so
+    the calling UI code can show a friendly message instead of a crash.
     """
+    text = ""
     try:
         reader = PdfReader(io.BytesIO(file_bytes))
         text_parts = []
@@ -87,18 +98,69 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
             except Exception:
                 page_text = ""
             text_parts.append(page_text)
-        return "\n".join(text_parts).strip()
+        text = "\n".join(text_parts).strip()
     except Exception as e:
-        st.session_state.setdefault("errors", []).append(f"PDF extraction failed: {e}")
-        return ""
+        st.session_state.setdefault("errors", []).append(f"PDF text-layer extraction failed: {e}")
+
+    # If the PDF had a real text layer with a reasonable amount of content,
+    # use it directly — no need for slower OCR.
+    if len(text) >= 40:
+        return text
+
+    # Otherwise, treat this as a scanned/image-only PDF and OCR each page.
+    try:
+        ocr_parts = []
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        for page in doc:
+            # Render at 2x zoom so small/blurry scans are easier for OCR to read
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            page_image_bytes = pix.tobytes("png")
+            ocr_parts.append(extract_text_from_image(page_image_bytes))
+        doc.close()
+        ocr_text = "\n".join(p for p in ocr_parts if p).strip()
+        if ocr_text:
+            return ocr_text
+    except Exception as e:
+        st.session_state.setdefault("errors", []).append(
+            f"This PDF looks like a scanned image and OCR fallback also failed: {e}"
+        )
+
+    return text  # whatever we had (possibly empty)
 
 
 # ---------------------------------------------------------------------------
 # TEXT EXTRACTION: IMAGE (OCR)
 # ---------------------------------------------------------------------------
 
+def _preprocess_image_for_ocr(image: Image.Image) -> Image.Image:
+    """Clean up a phone photo / scanner-app image so Tesseract reads it better.
+
+    Handles the most common real-world issues with bill photos: sideways
+    orientation from phone cameras, low resolution, uneven lighting/shadows,
+    and slightly blurry text.
+    """
+    # Respect the camera's rotation metadata (very common with phone photos)
+    image = ImageOps.exif_transpose(image)
+    # Grayscale — color information doesn't help OCR and can hurt it
+    image = image.convert("L")
+    # Upscale small images; Tesseract does noticeably better above ~1500px wide
+    if image.width < 1500:
+        scale = 1500 / max(image.width, 1)
+        new_size = (int(image.width * scale), int(image.height * scale))
+        image = image.resize(new_size, Image.LANCZOS)
+    # Fix uneven lighting / shadows / low contrast (common in phone photos)
+    image = ImageOps.autocontrast(image, cutoff=2)
+    # Mild sharpening helps slightly blurry or compressed (e.g. WhatsApp) images
+    image = image.filter(ImageFilter.SHARPEN)
+    return image
+
+
 def extract_text_from_image(file_bytes: bytes) -> str:
     """Extract text from a bill photo/screenshot using Tesseract OCR.
+
+    Tries a few different Tesseract page-segmentation modes (bills have
+    mixed layouts: tables, labels, logos) and keeps whichever result has
+    the most extracted text, since that is usually the most complete read.
 
     NOTE: On Streamlit Community Cloud, the `tesseract-ocr` binary must be
     installed via a `packages.txt` file (apt package), otherwise pytesseract
@@ -106,10 +168,22 @@ def extract_text_from_image(file_bytes: bytes) -> str:
     """
     try:
         image = Image.open(io.BytesIO(file_bytes))
-        # Basic preprocessing: convert to grayscale to improve OCR accuracy
-        image = image.convert("L")
-        text = pytesseract.image_to_string(image)
-        return text.strip()
+        processed = _preprocess_image_for_ocr(image)
+
+        best_text = ""
+        # psm 6 = assume a single uniform block of text (good default for bills)
+        # psm 4 = assume a single column of text of variable sizes (good for tables)
+        # psm 3 = fully automatic page segmentation (fallback/general purpose)
+        for psm in (6, 4, 3):
+            try:
+                candidate = pytesseract.image_to_string(processed, config=f"--psm {psm}")
+                candidate = candidate.strip()
+                if len(candidate) > len(best_text):
+                    best_text = candidate
+            except Exception:
+                continue
+
+        return best_text
     except pytesseract.TesseractNotFoundError:
         st.session_state.setdefault("errors", []).append(
             "OCR engine (Tesseract) is not installed on this server. "
@@ -139,10 +213,10 @@ def extract_bill_text(uploaded_file) -> str:
         )
         return ""
 
-    if not text:
+    if not text or len(text.strip()) < 15:
         st.session_state.setdefault("errors", []).append(
-            "Could not extract any readable text from the uploaded bill. "
-            "Please enter the bill details manually below."
+            "Only partial or no text could be read from this bill. You can still continue — "
+            "just fill in / correct any missing fields manually in the 'Analyze Bill' tab."
         )
     return text
 
