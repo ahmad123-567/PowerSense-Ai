@@ -24,9 +24,22 @@ from pypdf import PdfReader
 from PIL import Image
 import pytesseract
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+# These imports are wrapped in try/except because different langchain
+# versions have moved these classes between packages (langchain vs
+# langchain_text_splitters, langchain_community vs langchain_huggingface).
+# This keeps the app working across the version range in requirements.txt.
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+except ImportError:
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
+
+try:
+    from langchain_huggingface import HuggingFaceEmbeddings
+except ImportError:
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+
 from langchain_core.documents import Document
 
 from groq import Groq
