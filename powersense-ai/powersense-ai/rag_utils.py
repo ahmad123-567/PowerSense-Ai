@@ -43,8 +43,18 @@ from groq import Groq
 
 GROQ_MODEL = "openai/gpt-oss-120b"
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+
+# Base directory setup
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Check multiple potential knowledge paths
 KNOWLEDGE_DIR = os.path.join(BASE_DIR, "knowledge")
+
+# Fallback path if files are nested inside powersense-ai/powersense-ai/knowledge
+if not os.path.exists(KNOWLEDGE_DIR) or not os.listdir(KNOWLEDGE_DIR):
+    alt_path = os.path.join(BASE_DIR, "powersense-ai", "powersense-ai", "knowledge")
+    if os.path.exists(alt_path):
+        KNOWLEDGE_DIR = alt_path
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
 TOP_K = 5
