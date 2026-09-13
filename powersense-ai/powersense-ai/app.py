@@ -223,23 +223,38 @@ with tab_upload:
     )
 
     if uploaded_file is not None:
-        with st.spinner("Reading your bill (OCR / PDF extraction)..."):
-            text = extract_bill_text(uploaded_file)
-            st.session_state["bill_text"] = text
+        # Only re-run extraction if this is a newly uploaded file (avoids
+        # re-running OCR + an LLM call every time Streamlit reruns the script).
+        file_signature = f"{uploaded_file.name}:{uploaded_file.size}"
+        if st.session_state.get("last_uploaded_signature") != file_signature:
+            with st.spinner("Reading your bill (OCR / PDF extraction)..."):
+                text = extract_bill_text(uploaded_file)
+                st.session_state["bill_text"] = text
+                st.session_state["last_uploaded_signature"] = file_signature
+                st.session_state["bill_data"] = None  # reset so we re-extract fields below
+
+            # Auto-run field extraction right away (Agent 1) so the user only
+            # has one remaining step: reviewing fields + running the analysis.
+            if text and api_key:
+                with st.spinner("Reading key details from your bill..."):
+                    st.session_state["bill_data"] = extract_bill_fields_with_llm(api_key, text)
 
         if uploaded_file.type.startswith("image"):
             st.image(uploaded_file, caption="Uploaded bill", use_container_width=True)
 
-        if st.session_state["bill_text"]:
-            st.success("Text extracted from your bill. Review it below if you like.")
+        if st.session_state["bill_text"] and len(st.session_state["bill_text"].strip()) >= 15:
+            st.success("Bill read successfully. Go to '🔍 Analyze Bill' to review fields and run the analysis.")
             with st.expander("🔎 Raw extracted text (for verification)"):
                 st.text(st.session_state["bill_text"][:5000])
         else:
-            st.error(
-                "We could not confidently extract text from this file. "
-                "Please try a clearer photo/PDF, or fill in details manually in the "
-                "'Analyze Bill' tab."
+            st.warning(
+                "Only partial or unclear text could be read from this file (common with blurry "
+                "photos or heavily compressed scans). No problem — go to '🔍 Analyze Bill' and "
+                "fill in / correct the fields manually, then run the analysis."
             )
+            if st.session_state["bill_text"]:
+                with st.expander("🔎 Whatever text we could read (for reference)"):
+                    st.text(st.session_state["bill_text"][:5000])
 
     st.markdown("---")
     st.info(
@@ -255,21 +270,19 @@ with tab_analyze:
     if not api_key:
         st.error("Add your GROQ_API_KEY in Streamlit Secrets to run the analysis.")
 
-    run_extraction = st.button(
-        "🧠 Step 1: Extract Fields from Bill Text", disabled=not st.session_state["bill_text"] or not api_key
-    )
-
-    if run_extraction:
-        with st.spinner("Bill Extraction Agent is reading your bill..."):
-            data = extract_bill_fields_with_llm(api_key, st.session_state["bill_text"])
-            # Fill provider automatically if detected and user left it as Auto-detect
-            if provider_choice == "Auto-detect" and data.get("provider"):
-                pass  # keep LLM-detected provider string as-is in bill_data
-            st.session_state["bill_data"] = data
-        st.success("Fields extracted. Review and correct them below if needed.")
-
     if not st.session_state["bill_text"]:
         st.warning("Please upload a bill in the '📤 Upload Bill' tab first.")
+    else:
+        st.caption(
+            "Fields below were auto-filled from your uploaded bill where possible — "
+            "just correct/complete anything that's missing, then run the analysis."
+        )
+        if st.button("🔄 Re-read fields from bill text", disabled=not api_key):
+            with st.spinner("Re-reading fields..."):
+                st.session_state["bill_data"] = extract_bill_fields_with_llm(
+                    api_key, st.session_state["bill_text"]
+                )
+            st.success("Fields re-read. Review below.")
 
     st.markdown("### ✍️ Review / Complete Bill Fields")
     st.caption("Any field the AI could not confidently read is left blank — please fill it in.")
