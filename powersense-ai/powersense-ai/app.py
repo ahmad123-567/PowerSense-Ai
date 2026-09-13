@@ -218,45 +218,240 @@ with tab_home:
 # ------------------------------ UPLOAD --------------------------------------
 with tab_upload:
     st.header("📤 Upload Your Electricity Bill")
+
     uploaded_file = st.file_uploader(
         "Upload a photo/screenshot (JPG, JPEG, PNG) or a PDF of your bill",
         type=["jpg", "jpeg", "png", "pdf"],
     )
 
     if uploaded_file is not None:
-        with st.spinner("Reading your bill (OCR / PDF extraction)..."):
+
+        # ---------------------------------------------------------------
+        # STEP 1 — READ BILL
+        # ---------------------------------------------------------------
+        with st.spinner("🔎 Reading your electricity bill..."):
             text = extract_bill_text(uploaded_file)
             st.session_state["bill_text"] = text
 
         if uploaded_file.type.startswith("image"):
-            st.image(uploaded_file, caption="Uploaded bill", use_container_width=True)
-
-        if st.session_state["bill_text"]:
-            st.success("Text extracted from your bill. Review it below if you like.")
-
-            # Quick OCR quality checks for the most important numeric fields.
-            ocr_checks = rag.quick_bill_ocr_checks(st.session_state["bill_text"])
-            if ocr_checks.get("warnings"):
-                with st.expander("⚠️ OCR quality checks", expanded=True):
-                    for warning in ocr_checks["warnings"]:
-                        st.warning(warning)
-            if ocr_checks.get("detected"):
-                with st.expander("🔢 Detected bill readings (OCR check)"):
-                    st.json(ocr_checks["detected"])
-
-            with st.expander("🔎 Raw extracted text (for verification)"):
-                st.text(st.session_state["bill_text"][:8000])
-        else:
-            st.error(
-                "We could not confidently extract text from this file. "
-                "Please try a clearer photo/PDF, or fill in details manually in the "
-                "'Analyze Bill' tab."
+            st.image(
+                uploaded_file,
+                caption="Uploaded electricity bill",
+                use_container_width=True,
             )
 
+        if not text:
+            st.error(
+                "❌ We could not read enough information from this bill. "
+                "Please upload a clearer image or PDF."
+            )
+
+        else:
+            st.success("✅ Bill successfully read.")
+
+            # OCR quality check
+            ocr_checks = rag.quick_bill_ocr_checks(text)
+
+            if ocr_checks.get("warnings"):
+                with st.expander("⚠️ OCR Quality Check", expanded=False):
+                    for warning in ocr_checks["warnings"]:
+                        st.warning(warning)
+
+            if ocr_checks.get("detected"):
+                with st.expander("🔢 Detected Meter Readings", expanded=False):
+                    st.json(ocr_checks["detected"])
+
+            with st.expander("🔎 Raw Extracted Text", expanded=False):
+                st.text(text[:8000])
+
+            # -----------------------------------------------------------
+            # AUTOMATIC ANALYSIS
+            # -----------------------------------------------------------
+
+            if not api_key:
+                st.error(
+                    "⚠️ GROQ_API_KEY is missing. Add it in "
+                    "Streamlit Cloud → Settings → Secrets."
+                )
+
+            else:
+
+                # -------------------------------------------------------
+                # STEP 2 — EXTRACT BILL FIELDS
+                # -------------------------------------------------------
+                with st.spinner(
+                    "🧠 AI is extracting bill details..."
+                ):
+                    data = extract_bill_fields_with_llm(
+                        api_key,
+                        text
+                    )
+
+                    validation = rag.validate_bill_data(data)
+
+                    if validation.get("calculated_units") is not None:
+                        data["units_consumed"] = validation[
+                            "calculated_units"
+                        ]
+
+                    data["validation_notes"] = validation.get(
+                        "notes",
+                        []
+                    )
+
+                    st.session_state["bill_data"] = data
+
+                # -------------------------------------------------------
+                # STEP 3 — RAG SEARCH
+                # -------------------------------------------------------
+
+                final_bill_data = st.session_state["bill_data"]
+
+                query_text = (
+                    f"{final_bill_data.get('tariff_category') or ''} tariff "
+                    f"{final_bill_data.get('provider') or provider_choice} "
+                    f"units {final_bill_data.get('units_consumed') or ''} "
+                    f"FCA quarterly adjustment surcharges taxes "
+                    f"{user_question or ''}"
+                )
+
+                with st.spinner(
+                    "📚 Searching official tariff information..."
+                ):
+                    vectorstore = build_or_load_vectorstore()
+
+                    context_chunks = retrieve_relevant_chunks(
+                        query_text,
+                        vectorstore
+                    )
+
+                    st.session_state["context_chunks"] = context_chunks
+
+                # -------------------------------------------------------
+                # STEP 4 — FULL AI ANALYSIS
+                # -------------------------------------------------------
+
+                with st.spinner(
+                    "⚡ PowerSense AI is analyzing your bill..."
+                ):
+
+                    resolved_provider = (
+                        final_bill_data.get("provider")
+                        if provider_choice == "Auto-detect"
+                        else provider_choice
+                    )
+
+                    analysis = analyze_and_verify_bill(
+                        api_key,
+                        final_bill_data,
+                        resolved_provider or "Unknown",
+                        consumer_category,
+                        language,
+                        context_chunks,
+                    )
+
+                    st.session_state["analysis"] = analysis
+
+                # -------------------------------------------------------
+                # RESULT
+                # -------------------------------------------------------
+
+                if analysis:
+
+                    st.success(
+                        "🎉 Bill analysis completed successfully!"
+                    )
+
+                    st.info(
+                        "Go to **📊 Bill Breakdown**, **⚠️ Attention**, "
+                        "or **💡 Why High?** to see the complete analysis."
+                    )
+
+                    # Show a quick result directly on Upload page
+                    summary = analysis.get(
+                        "bill_summary",
+                        {}
+                    )
+
+                    st.markdown("### ⚡ Quick Analysis")
+
+                    c1, c2, c3 = st.columns(3)
+
+                    c1.metric(
+                        "Units Consumed",
+                        summary.get("units_consumed") or "—"
+                    )
+
+                    c2.metric(
+                        "Total Bill",
+                        (
+                            f"PKR {summary.get('total_bill')}"
+                            if summary.get("total_bill") is not None
+                            else "—"
+                        )
+                    )
+
+                    c3.metric(
+                        "Due Date",
+                        summary.get("due_date") or "—"
+                    )
+
+                    st.markdown("### 💡 Why Is My Bill High?")
+
+                    st.write(
+                        analysis.get(
+                            "why_bill_is_high",
+                            "No explanation was generated."
+                        )
+                    )
+
+                    attention_items = analysis.get(
+                        "attention_items",
+                        []
+                    )
+
+                    if attention_items:
+
+                        st.markdown("### ⚠️ Items Requiring Attention")
+
+                        for item in attention_items:
+
+                            status = item.get(
+                                "status",
+                                "Requires Verification"
+                            )
+
+                            icon = STATUS_ICONS.get(
+                                status,
+                                "🟡"
+                            )
+
+                            st.warning(
+                                f"{icon} "
+                                f"{item.get('charge_name', 'Unknown Charge')} "
+                                f"— PKR {item.get('amount', '—')}\n\n"
+                                f"{item.get('flag_reason', '')}"
+                            )
+
+                else:
+
+                    st.error(
+                        "❌ The bill was read successfully, but AI analysis "
+                        "could not be generated."
+                    )
+
+                    if st.session_state.get("errors"):
+                        with st.expander(
+                            "🔧 Technical Details"
+                        ):
+                            for error in st.session_state["errors"][-5:]:
+                                st.write("• " + error)
+
     st.markdown("---")
+
     st.info(
-        "No sensitive personal information (CNIC, phone number, address) is required. "
-        "Only bill-related figures are used for analysis."
+        "No sensitive personal information (CNIC, phone number, address) "
+        "is required. Only bill-related figures are used for analysis."
     )
 
 
