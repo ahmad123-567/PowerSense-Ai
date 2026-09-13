@@ -412,46 +412,52 @@ def get_embeddings():
     return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
 
 
-def _load_knowledge_documents() -> List[Document]:
-    """Read every PDF in knowledge/ and split it into chunks."""
-    documents: List[Document] = []
-    pdf_paths = sorted(glob.glob(os.path.join(KNOWLEDGE_DIR, "*.pdf")))
+def _load_knowledge_documents():
+    documents = []
+
+    # Always resolve knowledge folder relative to rag_utils.py
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    knowledge_dir = os.path.join(base_dir, "knowledge")
+
+    # Search PDFs recursively
+    pdf_paths = sorted(
+        glob.glob(os.path.join(knowledge_dir, "**", "*.pdf"), recursive=True)
+    )
+
+    print("======================================")
+    print("PowerSense Knowledge Base")
+    print("Base directory:", base_dir)
+    print("Knowledge directory:", knowledge_dir)
+    print("PDF files found:", len(pdf_paths))
+    print("PDF paths:", pdf_paths)
+    print("======================================")
 
     if not pdf_paths:
         return documents
 
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP,
-        separators=["\n\n", "\n", ". ", " ", ""],
-    )
-
-    for path in pdf_paths:
+    for pdf_path in pdf_paths:
         try:
-            reader = PdfReader(path)
-            full_text = ""
-            for page in reader.pages:
-                full_text += (page.extract_text() or "") + "\n"
+            reader = PdfReader(pdf_path)
 
-            if not full_text.strip():
-                continue
+            for page_number, page in enumerate(reader.pages):
+                text = page.extract_text() or ""
 
-            chunks = splitter.split_text(full_text)
-            source_name = os.path.basename(path)
-            for chunk in chunks:
-                documents.append(
-                    Document(
-                        page_content=chunk,
-                        metadata={"source": source_name},
+                if text.strip():
+                    documents.append(
+                        Document(
+                            page_content=text,
+                            metadata={
+                                "source": os.path.basename(pdf_path),
+                                "file_path": pdf_path,
+                                "page": page_number + 1,
+                            },
+                        )
                     )
-                )
+
         except Exception as e:
-            add_error(
-                f"Could not read knowledge file {os.path.basename(path)}: {e}"
-            )
+            print(f"Error reading {pdf_path}: {e}")
 
     return documents
-
 
 @st.cache_resource(show_spinner=False)
 def build_or_load_vectorstore():
