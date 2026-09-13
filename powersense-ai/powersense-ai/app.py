@@ -13,6 +13,7 @@ fake, or fraudulent — see the disclaimer in the sidebar and About page.
 import os
 import json
 import streamlit as st
+import rag_utils as rag
 
 from rag_utils import (
     GROQ_MODEL,
